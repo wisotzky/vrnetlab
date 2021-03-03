@@ -292,6 +292,33 @@ def parse_custom_variant(self, cfg):
     return variant
 
 
+# parse_metadata parses the metadata and creates a map with key-value pairs
+def parse_metadata(m):
+    if len(m) == 0:
+        return {}
+    metadata = {}
+    for opt in m:
+        if "=" not in opt:
+            logger.warning(f"unrecognized option {opt}")
+            continue
+        k, v = opt.split("=")
+        metadata[k] = v
+    return metadata
+
+
+# generate bof configuration commands based on metadata passed
+# TODO: add ipv6 management support
+def gen_bof_config(m):
+    cmds = []
+    if "docker-net-v4-addr" in m:
+        cmds.append(
+            f'/bof static-route {m["docker-net-v4-addr"]} next-hop {BRIDGE_ADDR}'
+        )
+    # if "docker-net-v6-addr" in m:
+    #     cmds.append(f"/bof static-route {m[docker-net-v6-addr]} next-hop {BRIDGE_ADDR}")
+    return cmds
+
+
 def mangle_uuid(uuid):
     """Mangle the UUID to fix endianness mismatch on first part"""
     parts = uuid.split("-")
@@ -402,7 +429,7 @@ class SROS_integrated(SROS_vm):
     """Integrated VSR-SIM"""
 
     def __init__(
-        self, hostname, username, password, mode, num_nics, variant, conn_mode
+        self, hostname, username, password, mode, num_nics, variant, conn_mode, metadata
     ):
         super(SROS_integrated, self).__init__(
             username, password, ram=1024 * int(variant["min_ram"]), conn_mode=conn_mode
@@ -415,6 +442,7 @@ class SROS_integrated(SROS_vm):
         self.logger.info("Acting timos line: {}".format(self.smbios))
         self.variant = variant
         self.hostname = hostname
+        self.metadata = metadata
 
     def gen_mgmt(self):
         """Generate mgmt interface(s)
@@ -463,6 +491,10 @@ class SROS_integrated(SROS_vm):
                 for l in iter(self.variant["card_config"].splitlines()):
                     self.wait_write(l)
 
+            if len(m) != 0:
+                for l in iter(gen_bof_config(self.metadata)):
+                    self.wait_write(l)
+
             self.wait_write("/admin save")
             self.wait_write(
                 "/configure system management-interface configuration-mode {mode}".format(
@@ -476,7 +508,15 @@ class SROS_cp(SROS_vm):
     """Control plane for distributed VSR-SIM"""
 
     def __init__(
-        self, hostname, username, password, mode, major_release, variant, conn_mode
+        self,
+        hostname,
+        username,
+        password,
+        mode,
+        major_release,
+        variant,
+        conn_mode,
+        metadata,
     ):
         # cp - control plane. role is used to create a separate overlay image name
         self.role = "cp"
@@ -491,6 +531,7 @@ class SROS_cp(SROS_vm):
         self.smbios = [
             f"type=1,product=TIMOS:address={SROS_MGMT_ADDR}/{PREFIX_LENGTH}@active license-file=tftp://{BRIDGE_ADDR}/license.txt primary-config=tftp://{BRIDGE_ADDR}/config.txt system-base-mac={vrnetlab.gen_mac(0)} {variant['cp']['timos_line']}"
         ]
+        self.metadata = metadata
 
     def start(self):
         # use parent class start() function
@@ -552,6 +593,10 @@ class SROS_cp(SROS_vm):
             # configure card/mda of a given variant
             if "card_config" in self.variant["lc"]:
                 for l in iter(self.variant["lc"]["card_config"].splitlines()):
+                    self.wait_write(l)
+
+            if len(m) != 0:
+                for l in iter(gen_bof_config(self.metadata)):
                     self.wait_write(l)
 
             self.wait_write("/admin save")
@@ -621,7 +666,9 @@ class SROS_lc(SROS_vm):
 
 
 class SROS(vrnetlab.VR):
-    def __init__(self, hostname, username, password, mode, variant_name, conn_mode):
+    def __init__(
+        self, hostname, username, password, mode, variant_name, conn_mode, metadata
+    ):
         super(SROS, self).__init__(username, password)
 
         if variant_name in SROS_VARIANTS:
@@ -683,6 +730,7 @@ class SROS(vrnetlab.VR):
                     major_release,
                     variant,
                     conn_mode,
+                    metadata=metadata,
                 ),
                 SROS_lc(variant, conn_mode, variant["max_nics"]),
             ]
@@ -701,6 +749,7 @@ class SROS(vrnetlab.VR):
                     variant["max_nics"],
                     variant,
                     conn_mode=conn_mode,
+                    metadata=metadata,
                 )
             ]
 
@@ -730,6 +779,11 @@ if __name__ == "__main__":
         "--connection-mode",
         default="vrxcon",
         help="Connection mode to use in the datapath",
+    )
+    parser.add_argument(
+        "--metadata",
+        action="append",
+        help="Metadata",
     )
     args = parser.parse_args()
 
@@ -811,8 +865,10 @@ if __name__ == "__main__":
     )
 
     logger.debug(
-        f"acting flags: username '{args.username}', password '{args.password}', connection-mode '{args.connection_mode}', variant '{args.variant}', connection mode '{args.connection_mode}'"
+        f"acting flags: username='{args.username}', password='{args.password}', connection-mode='{args.connection_mode}', variant='{args.variant}', connection mode='{args.connection_mode}', metadata='{args.metadata}'"
     )
+
+    m = parse_metadata(args.metadata)
 
     ia = SROS(
         args.hostname,
@@ -821,5 +877,6 @@ if __name__ == "__main__":
         mode=args.mode,
         variant_name=args.variant,
         conn_mode=args.connection_mode,
+        metadata=m,
     )
     ia.start(add_fwd_rules=False)
