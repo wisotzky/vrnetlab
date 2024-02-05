@@ -90,7 +90,9 @@ class VM:
         self.nic_type = "e1000"
         self.num_nics = 0
         # number of nics that are actually *provisioned* (as in nics that will be added to container)
-        self.num_provisioned_nics = int(os.environ.get("CLAB_INTFS", 0))
+        # since hellt/vrnetlab 0.15.0 the CLAB_INTFS_WITH_MGMT env var is used (instead of CLAB_INTFS)
+        # that counts management interface as well as data plane interfaces defined in the topology
+        self.num_provisioned_nics = int(os.environ.get("CLAB_INTFS_WITH_MGMT", 0))
         # "highest" provisioned nic num -- used for making sure we can allocate nics without needing
         # to have them allocated sequential from eth1
         self.highest_provisioned_nic_num = 0
@@ -425,7 +427,7 @@ class VM:
 
     def nic_provision_delay(self) -> None:
         self.logger.debug(
-            f"number of provisioned data plane interfaces is {self.num_provisioned_nics}"
+            f"number of provisioned data and control plane interfaces is {self.num_provisioned_nics}"
         )
 
         if self.num_provisioned_nics == 0:
@@ -458,9 +460,11 @@ class VM:
                     self.highest_provisioned_nic_num = max(nics)
 
                 self.logger.debug(
-                    f"highest allocated interface id determined to be: {self.highest_provisioned_nic_num}..."
+                    f"highest allocated interface id determined to be: {self.highest_provisioned_nic_num}"
                 )
-                self.logger.debug("interfaces provisioned, continuing...")
+                self.logger.debug(
+                    "control and datap plane interfaces detected, continuing..."
+                )
                 return
             time.sleep(5)
 
